@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#9F8FD4" />
+  <meta name="description" content="好きな人のページにすぐ飛べる、わたし用のランチャー。" />
+
+  <title>ファンノート</title>
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" type="image/png" href="./icons/favicon.png" />
+
+  <!-- iPhone home screen -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="ファンノート" />
+  <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+
+  <link rel="stylesheet" href="./css/styles.css" />
+</head>
+<body>
+  <!-- ===== ヘッダー ===== -->
+  <header class="app-header">
+    <h1 class="app-title">ファンノート</h1>
+  </header>
+
+  <!-- ===== フィルターチップ ===== -->
+  <nav class="chips" id="chips" aria-label="絞り込み"></nav>
+
+  <!-- ===== 人カードのリスト ===== -->
+  <main class="list" id="list"></main>
+
+  <!-- ===== ＋おきに追加ボタン ===== -->
+  <button class="fab" id="fab" type="button" aria-label="おきに追加">
+    <span class="fab-plus">＋</span><span class="fab-text">おきに追加</span>
+  </button>
+
+  <!-- ===== シート（追加・詳細）の入れ物 ===== -->
+  <div class="sheet-backdrop" id="backdrop" hidden></div>
+  <section class="sheet" id="sheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheet-title"></section>
+
+  <!-- ===== 確認ダイアログ ===== -->
+  <div class="dialog-backdrop" id="dialog-backdrop" hidden>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="dialog-title">
+      <p class="dialog-title" id="dialog-title"></p>
+      <p class="dialog-body" id="dialog-body"></p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" id="dialog-cancel" type="button">キャンセル</button>
+        <button class="btn btn-primary" id="dialog-ok" type="button">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== トースト（お知らせ） ===== -->
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="./js/app.js"></script>
+</body>
+</html>
