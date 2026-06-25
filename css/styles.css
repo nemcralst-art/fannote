@@ -53,10 +53,28 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   position: sticky;
   top: 0;
   z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   background: var(--cream);
   padding: calc(14px + var(--safe-top)) 20px 12px;
   border-bottom: 1px solid var(--lavender-line);
 }
+.header-refresh {
+  flex: 0 0 auto;
+  width: 32px; height: 32px;
+  border-radius: 10px;
+  display: grid; place-items: center;
+  color: var(--lavender-dark);
+  font-size: 21px; line-height: 1;
+}
+.header-refresh:active { background: var(--lavender-soft); }
+.header-refresh.is-spinning .header-refresh-ico {
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 .app-title {
   margin: 0;
   font-size: 21px;
@@ -193,6 +211,25 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 新着 NEW バッジ（noteボタンの中につく） */
+.new-badge {
+  background: var(--danger);
+  color: var(--white);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 6px;
+}
+/* note が取れなかった時のひとこと（詳細シート） */
+.note-warn {
+  font-size: 13px;
+  color: var(--ink-soft);
+  background: var(--lavender-soft);
+  border-radius: 12px;
+  padding: 12px 14px;
 }
 
 /* ===== からっぽ表示 ===== */

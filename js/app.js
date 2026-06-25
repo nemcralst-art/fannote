@@ -1,8 +1,9 @@
 /* ===========================================================
-   ファンノート  —  アプリ本体（Phase 1 / MVP）
+   ファンノート  —  アプリ本体（Phase 1〜2）
    入っているもの：レジストリ・人カード・フィルターチップ・
    ページに飛ぶ・手動追加（新規/既存の紐付け確認つき）・削除・詳細シート
-   入っていないもの（Phase 2以降）：note自動取得 / NEW / 日次チェック・沈み・リセット
+   note自動取得＋新着NEW（中継ごし・タップで既読→消える・⟳で手動更新）
+   入っていないもの（Phase 3以降）：日次チェック・沈み・リセット・カウンター
    保存：IndexedDB（この端末の中だけ）
    =========================================================== */
 
@@ -77,7 +78,12 @@ function orderedAccountKeys(p) {
 
 function makeAccount(key, handle) {
   const acc = { handle };
-  if (key === 'note') acc.lastSeenArticleId = null; // Phase 2用に器だけ用意
+  if (key === 'note') {
+    acc.lastSeenArticleId = null; // 既読の最新記事ID（これと違う新しい記事が来たらNEW）
+    acc.latest = null;            // { id, title, url, publishAt }
+    acc.lastFetchedAt = 0;        // 最後に取りに行った時刻(ms)
+    acc.fetchError = false;       // 直近の取得に失敗したか
+  }
   return acc;
 }
 
@@ -161,6 +167,122 @@ function idbDelete(id) {
     r.onsuccess = () => res();
     r.onerror = () => rej(r.error);
   });
+}
+
+/* -----------------------------------------------------------
+   4.5 note 取得（中継ごし）— 最新記事を見て「新着NEW」を出す
+   note は外のアプリから直接読めない（CORS）ので、きろく帖の中継を流用する。
+   呼び方： {NOTE_PROXY}/?path=（noteのAPIパスを encodeURIComponent）
+   ※ 取れなくてもアプリは普通に使える（ランチャーとして動く・状態は壊さない）
+   ----------------------------------------------------------- */
+const NOTE_PROXY = 'https://note-proxy.nemcralst.workers.dev';
+const NOTE_REFRESH_MS = 60 * 60 * 1000; // 同じ人は1時間に1回まで自動チェック（連打しない）
+
+function noteApiUrl(handle) {
+  const path = `/api/v2/creators/${handle}/contents?kind=note&page=1`;
+  return `${NOTE_PROXY}/?path=${encodeURIComponent(path)}`;
+}
+
+function formatNoteDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}/${m}/${day}`;
+}
+
+// note の最新記事を1件返す（記事ゼロなら null・通信や解析に失敗したら throw）
+async function fetchNoteLatest(handle) {
+  const res = await fetch(noteApiUrl(handle), {
+    headers: { Accept: 'application/json' },
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  let json = await res.json();
+  // 中継が文字列で包んで返す形にも一応そなえる
+  if (json && typeof json.contents === 'string') {
+    try { json = JSON.parse(json.contents); } catch (_) { /* そのまま */ }
+  }
+  const list = (json && json.data && json.data.contents) ||
+               (json && Array.isArray(json.contents) && json.contents) || [];
+  if (!Array.isArray(list) || list.length === 0) return null;
+  const c = list[0]; // 新しい順なので先頭が最新
+  const key = c.key != null ? String(c.key) : null;
+  const id = c.id != null ? String(c.id) : key;
+  if (!id) return null;
+  return {
+    id,
+    title: (c.name || '').trim() || '(無題)',
+    url: c.noteUrl || (key ? `https://note.com/${handle}/n/${key}` : `https://note.com/${handle}`),
+    publishAt: c.publishAt || null,
+  };
+}
+
+// この note アカウントに「新着」があるか（初回チェック後・既読より新しい記事）
+function isNoteNew(acc) {
+  return !!(acc && acc.latest && acc.lastSeenArticleId &&
+            acc.lastSeenArticleId !== acc.latest.id);
+}
+
+// note の最新を見に行く。force=true で時間制限を無視（手動更新）
+// 戻り値：{ tried, newCount, errCount }
+let _refreshingNotes = false;
+async function refreshNotes({ force = false } = {}) {
+  if (_refreshingNotes) return null;
+  const sns = snsByKey('note');
+  if (!sns || !sns.autoFetch) return null;
+  const now = Date.now();
+  const targets = state.people.filter((p) => {
+    const acc = p.accounts && p.accounts.note;
+    if (!acc) return false;
+    if (force) return true;
+    return !acc.lastFetchedAt || (now - acc.lastFetchedAt) >= NOTE_REFRESH_MS;
+  });
+  if (targets.length === 0) return { tried: 0, newCount: 0, errCount: 0 };
+
+  _refreshingNotes = true;
+  let changed = false, newCount = 0, errCount = 0;
+  try {
+    for (const p of targets) {
+      const acc = p.accounts.note;
+      try {
+        const latest = await fetchNoteLatest(acc.handle);
+        acc.lastFetchedAt = Date.now();
+        acc.fetchError = false;
+        if (latest) {
+          const wasFirst = !acc.lastSeenArticleId;
+          acc.latest = latest;
+          if (wasFirst) {
+            acc.lastSeenArticleId = latest.id; // 初回は基準にするだけ（NEWは出さない）
+          } else if (acc.lastSeenArticleId !== latest.id) {
+            newCount++;
+          }
+        }
+        changed = true;
+      } catch (_) {
+        acc.fetchError = true;
+        acc.lastFetchedAt = Date.now(); // 失敗時もしばらく連打しない
+        errCount++;
+      }
+      await idbPut(p);
+    }
+  } finally {
+    _refreshingNotes = false;
+  }
+  if (changed) renderAll();
+  return { tried: targets.length, newCount, errCount };
+}
+
+// note を見た＝既読にして NEW を消す
+async function markNoteSeen(p) {
+  const acc = p.accounts && p.accounts.note;
+  if (!acc || !acc.latest) return;
+  if (acc.lastSeenArticleId !== acc.latest.id) {
+    acc.lastSeenArticleId = acc.latest.id;
+    await idbPut(p);
+    renderAll();
+  }
 }
 
 /* -----------------------------------------------------------
@@ -282,7 +404,17 @@ function personCard(p) {
     const lab = document.createElement('span'); lab.textContent = s.label;
     const hd = document.createElement('span'); hd.className = 'sns-handle'; hd.textContent = displayHandle(s, acc.handle);
     btn.append(lab, hd);
-    btn.addEventListener('click', () => openUrl(s, acc.handle));
+    if (key === 'note' && isNoteNew(acc)) btn.appendChild(el('span', 'new-badge', 'NEW'));
+    btn.addEventListener('click', () => {
+      if (key === 'note') {
+        // NEWがあれば新しい記事へ直行、なければプロフィールへ。どちらでも見たら既読に。
+        const goNew = isNoteNew(acc) && acc.latest && acc.latest.url;
+        openExternal(goNew ? acc.latest.url : buildUrl(s, acc.handle));
+        markNoteSeen(p);
+        return;
+      }
+      openUrl(s, acc.handle);
+    });
     snsRow.appendChild(btn);
   }
   card.appendChild(snsRow);
@@ -290,8 +422,7 @@ function personCard(p) {
 }
 
 /* ページに飛ぶ（開けないときはトーストで知らせるだけ・状態は壊さない） */
-function openUrl(sns, handle) {
-  const url = buildUrl(sns, handle);
+function openExternal(url) {
   try {
     const a = document.createElement('a');
     a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -302,6 +433,7 @@ function openUrl(sns, handle) {
     toast('ページを開けませんでした');
   }
 }
+function openUrl(sns, handle) { openExternal(buildUrl(sns, handle)); }
 
 /* -----------------------------------------------------------
    7. シート（下から出る画面）の土台
@@ -512,10 +644,12 @@ function buildAddStepNew(sheet) {
   add.style.marginTop = '12px';
   add.addEventListener('click', async () => {
     const name = (nameInput.value || '').trim() || addDraft.handle;
+    const isNote = addDraft.snsKey === 'note';
     await createPerson({ name, avatar: chosen, snsKey: addDraft.snsKey, handle: addDraft.handle });
     closeSheet();
     renderAll();
     toast(`「${name}」を追加しました`);
+    if (isNote) refreshNotes().catch(() => {}); // 追加したらすぐ新着を見に行く
   });
   sheet.appendChild(add);
 }
@@ -564,6 +698,7 @@ async function commitAttach(person, snsKey, handle, replaced) {
   closeSheet();
   renderAll();
   toast(replaced ? `「${person.name}」の ${sns.label} を変えました` : `「${person.name}」に ${sns.label} を足しました`);
+  if (snsKey === 'note') refreshNotes().catch(() => {});
 }
 
 async function createPerson({ name, avatar, snsKey, handle }) {
@@ -635,6 +770,30 @@ function buildDetail(sheet, id) {
     rm.addEventListener('click', () => removeSNS(id, key));
     row.append(ico, main, rm);
     sheet.appendChild(row);
+  }
+
+  // note の最新記事（取れていれば）
+  const noteAcc = p.accounts && p.accounts.note;
+  if (noteAcc && noteAcc.latest) {
+    sheet.appendChild(el('div', 'sheet-section-label', '最新の note'));
+    const art = el('button', 'row-btn'); art.type = 'button';
+    const aIco = el('span', 'row-ico', 'n'); aIco.style.background = snsByKey('note').color;
+    art.appendChild(aIco);
+    const am = el('div', 'row-main');
+    am.appendChild(el('span', null, noteAcc.latest.title || '(無題)'));
+    const meta = (isNoteNew(noteAcc) ? '🔴 新着　' : '') + (formatNoteDate(noteAcc.latest.publishAt) || '');
+    if (meta.trim()) am.appendChild(el('small', null, meta));
+    art.appendChild(am);
+    art.appendChild(el('span', 'row-arrow', '›'));
+    art.addEventListener('click', () => {
+      openExternal(noteAcc.latest.url);
+      markNoteSeen(p);
+      renderSheet((s) => buildDetail(s, id));
+    });
+    sheet.appendChild(art);
+  } else if (noteAcc && noteAcc.fetchError) {
+    sheet.appendChild(el('div', 'sheet-section-label', '最新の note'));
+    sheet.appendChild(el('div', 'note-warn', 'いまは取得できませんでした。上の ⟳ でもう一度ためせます。'));
   }
 
   // この人を削除
@@ -742,6 +901,7 @@ function buildDetailAddHandle(sheet, id, snsKey) {
       renderAll();
       renderSheet((s) => buildDetail(s, id));
       toast(`${sns.label} を足しました`);
+      if (snsKey === 'note') refreshNotes().catch(() => {});
     };
     // 同じSNS＋同じIDを別の人が持っていないか（同じ口座を2人に付けないように）
     const owner = findAccountOwner(snsKey, handle, id);
@@ -852,6 +1012,21 @@ function toast(msg) {
 function bindGlobal() {
   $('#fab').addEventListener('click', openAddSheet);
   $('#backdrop').addEventListener('click', closeSheet);
+
+  const refreshBtn = $('#refresh');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      if (refreshBtn.classList.contains('is-spinning')) return;
+      refreshBtn.classList.add('is-spinning');
+      let r = null;
+      try { r = await refreshNotes({ force: true }); } catch (_) {}
+      refreshBtn.classList.remove('is-spinning');
+      if (!r || r.tried === 0) { toast('note の人がいません'); return; }
+      if (r.newCount > 0) toast(`新着が ${r.newCount} 件あります`);
+      else if (r.errCount === r.tried) toast('いまは更新できませんでした');
+      else toast('新着はありません');
+    });
+  }
 }
 
 function registerSW() {
@@ -874,6 +1049,7 @@ async function init() {
   renderAll();
   bindGlobal();
   registerSW();
+  refreshNotes().catch(() => {}); // 起動時にnoteの新着を静かにチェック
 }
 
 init();
