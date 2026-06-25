@@ -2,7 +2,7 @@
    役割：ファイルをキャッシュしてオフラインでも開けるようにする。
    ※ IndexedDB（登録した人のデータ）には一切さわりません。更新で消えません。 */
 
-const VERSION = 'fannote-v1.2.0';
+const VERSION = 'fannote-v1.3.0';
 
 const ASSETS = [
   './',

@@ -83,6 +83,8 @@ function makeAccount(key, handle) {
     acc.latest = null;            // { id, title, url, publishAt }
     acc.lastFetchedAt = 0;        // 最後に取りに行った時刻(ms)
     acc.fetchError = false;       // 直近の取得に失敗したか
+    acc.image = null;             // noteプロフィール画像URL（アイコンに使う）
+    acc.nickname = null;          // noteの表示名
   }
   return acc;
 }
@@ -178,10 +180,73 @@ function idbDelete(id) {
 const NOTE_PROXY = 'https://note-proxy.nemcralst.workers.dev';
 const NOTE_REFRESH_MS = 60 * 60 * 1000; // 同じ人は1時間に1回まで自動チェック（連打しない）
 
-function noteApiUrl(handle) {
-  const path = `/api/v2/creators/${handle}/contents?kind=note&page=1`;
+// 中継ごしに note の任意APIパスを叩くURLを作る
+function noteProxyUrl(path) {
   return `${NOTE_PROXY}/?path=${encodeURIComponent(path)}`;
 }
+function noteApiUrl(handle) {
+  return noteProxyUrl(`/api/v2/creators/${handle}/contents?kind=note&page=1`);
+}
+
+// 中継の応答を素のnote JSONにそろえる（文字列で包む形にもそなえる）
+async function noteFetchJson(url) {
+  const res = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  let json = await res.json();
+  if (json && typeof json.contents === 'string') {
+    try { json = JSON.parse(json.contents); } catch (_) { /* そのまま */ }
+  }
+  return json;
+}
+
+// note のプロフィールから「名前」「アイコン画像URL」を拾う（キー名のゆれに強く）
+function pickNoteImage(o) {
+  if (!o) return null;
+  const v = o.userProfileImagePath || o.profileImageUrl || o.profile_image_url ||
+            o.iconImagePath || o.iconUrl || o.image || null;
+  if (!v) return null;
+  if (/^https?:\/\//i.test(v)) return v;
+  return 'https://assets.st-note.com' + (v[0] === '/' ? '' : '/') + v;
+}
+function pickNoteNick(o) { return (o && (o.nickname || o.name || o.displayName)) || null; }
+function pickNoteUrlname(o) { return (o && (o.urlname || o.urlName)) || null; }
+
+// note のプロフィール（名前・アイコン）を取りに行く
+async function fetchNoteCreator(handle) {
+  const json = await noteFetchJson(noteProxyUrl(`/api/v2/creators/${handle}`));
+  const d = (json && json.data) || json || {};
+  const u = d.user || d;
+  return {
+    urlname: pickNoteUrlname(u) || pickNoteUrlname(d) || handle,
+    nickname: pickNoteNick(u) || pickNoteNick(d),
+    image: pickNoteImage(u) || pickNoteImage(d),
+  };
+}
+
+// 自分のフォロー中の一覧を取りに行く（followers と同じ並びの followings 前提）
+async function fetchNoteFollowings(myId, maxPages = 6) {
+  const out = [];
+  for (let page = 1; page <= maxPages; page++) {
+    const json = await noteFetchJson(noteProxyUrl(`/api/v2/creators/${myId}/followings?page=${page}`));
+    const d = (json && json.data) || json || {};
+    const list = d.followings || d.contents || d.users || (Array.isArray(d) ? d : []);
+    if (!Array.isArray(list) || list.length === 0) break;
+    for (const it of list) {
+      const c = it.user || it;
+      const urlname = pickNoteUrlname(c);
+      if (!urlname) continue;
+      out.push({ urlname, nickname: pickNoteNick(c) || urlname, image: pickNoteImage(c) });
+    }
+    if (d.isLastPage === true) break;
+  }
+  const seen = new Set();
+  return out.filter((c) => (seen.has(c.urlname) ? false : (seen.add(c.urlname), true)));
+}
+
+// 自分のnote ID（フォロー中一覧に使う）— 端末に保存して使い回す
+const MY_NOTE_ID_KEY = 'fannote_my_note_id';
+function getMyNoteId() { try { return localStorage.getItem(MY_NOTE_ID_KEY) || ''; } catch (_) { return ''; } }
+function setMyNoteId(v) { try { localStorage.setItem(MY_NOTE_ID_KEY, v || ''); } catch (_) {} }
 
 function formatNoteDate(iso) {
   if (!iso) return '';
@@ -193,21 +258,22 @@ function formatNoteDate(iso) {
 }
 
 // note の最新記事を1件返す（記事ゼロなら null・通信や解析に失敗したら throw）
+// ※ noteは「固定記事」を先頭に返すことがあるので、並び順ではなく公開日が最新のものを採用
 async function fetchNoteLatest(handle) {
-  const res = await fetch(noteApiUrl(handle), {
-    headers: { Accept: 'application/json' },
-    cache: 'no-store',
-  });
-  if (!res.ok) throw new Error('HTTP ' + res.status);
-  let json = await res.json();
-  // 中継が文字列で包んで返す形にも一応そなえる
-  if (json && typeof json.contents === 'string') {
-    try { json = JSON.parse(json.contents); } catch (_) { /* そのまま */ }
-  }
+  const json = await noteFetchJson(noteApiUrl(handle));
   const list = (json && json.data && json.data.contents) ||
                (json && Array.isArray(json.contents) && json.contents) || [];
   if (!Array.isArray(list) || list.length === 0) return null;
-  const c = list[0]; // 新しい順なので先頭が最新
+  let best = null, bestT = -Infinity;
+  for (const c of list) {
+    if (!c) continue;
+    const pa = c.publishAt || c.publish_at || null;
+    const t = pa ? Date.parse(pa) : NaN;
+    const tt = isNaN(t) ? -Infinity : t;
+    if (best === null || tt > bestT) { best = c; bestT = tt; }
+  }
+  if (!best) best = list[0];
+  const c = best;
   const key = c.key != null ? String(c.key) : null;
   const id = c.id != null ? String(c.id) : key;
   if (!id) return null;
@@ -215,7 +281,7 @@ async function fetchNoteLatest(handle) {
     id,
     title: (c.name || '').trim() || '(無題)',
     url: c.noteUrl || (key ? `https://note.com/${handle}/n/${key}` : `https://note.com/${handle}`),
-    publishAt: c.publishAt || null,
+    publishAt: c.publishAt || c.publish_at || null,
   };
 }
 
@@ -248,7 +314,6 @@ async function refreshNotes({ force = false } = {}) {
       const acc = p.accounts.note;
       try {
         const latest = await fetchNoteLatest(acc.handle);
-        acc.lastFetchedAt = Date.now();
         acc.fetchError = false;
         if (latest) {
           const wasFirst = !acc.lastSeenArticleId;
@@ -259,12 +324,20 @@ async function refreshNotes({ force = false } = {}) {
             newCount++;
           }
         }
-        changed = true;
       } catch (_) {
         acc.fetchError = true;
-        acc.lastFetchedAt = Date.now(); // 失敗時もしばらく連打しない
         errCount++;
       }
+      // プロフィール画像・名前（まだ無ければ／手動更新なら取り直す。失敗してもNEWは止めない）
+      if (!acc.image || force) {
+        try {
+          const cr = await fetchNoteCreator(acc.handle);
+          if (cr && cr.image) acc.image = cr.image;
+          if (cr && cr.nickname) acc.nickname = cr.nickname;
+        } catch (_) { /* 画像は任意なので無視 */ }
+      }
+      acc.lastFetchedAt = Date.now(); // 連打しないよう、成否にかかわらず時刻を更新
+      changed = true;
       await idbPut(p);
     }
   } finally {
@@ -371,9 +444,7 @@ function personCard(p) {
   const top = document.createElement('div');
   top.className = 'card-top';
 
-  const av = document.createElement('div');
-  av.className = 'avatar';
-  av.textContent = p.avatar || '🙂';
+  const av = makeAvatar(p);
 
   const name = document.createElement('button');
   name.type = 'button';
@@ -438,14 +509,54 @@ function openUrl(sns, handle) { openExternal(buildUrl(sns, handle)); }
 /* -----------------------------------------------------------
    7. シート（下から出る画面）の土台
    ----------------------------------------------------------- */
-function showSheet() { $('#backdrop').hidden = false; $('#sheet').hidden = false; }
-function closeSheet() { $('#sheet').hidden = true; $('#backdrop').hidden = true; addDraft = null; }
+function showSheet() {
+  const sheet = $('#sheet');
+  sheet.style.transition = ''; sheet.style.transform = '';
+  $('#backdrop').hidden = false; sheet.hidden = false;
+}
+function closeSheet() {
+  const sheet = $('#sheet');
+  sheet.hidden = true; $('#backdrop').hidden = true; addDraft = null;
+  sheet.style.transition = ''; sheet.style.transform = '';
+}
 function renderSheet(buildFn) {
   const sheet = $('#sheet');
   sheet.innerHTML = '';
+  sheet.style.transform = ''; sheet.style.transition = '';
   const h = document.createElement('div'); h.className = 'sheet-handle'; sheet.appendChild(h);
+  const close = el('button', 'sheet-close', '✕'); close.type = 'button';
+  close.setAttribute('aria-label', '閉じる');
+  close.addEventListener('click', closeSheet);
+  sheet.appendChild(close);
   buildFn(sheet);
   sheet.scrollTop = 0;
+}
+
+// 下から出るシートを下スワイプで閉じる（＆そのスワイプがPWA本体に伝わって閉じるのを防ぐ）
+function enableSheetDrag(sheet) {
+  let startY = 0, delta = 0, dragging = false;
+  sheet.addEventListener('touchstart', (e) => {
+    if (sheet.hidden || e.touches.length !== 1 || sheet.scrollTop > 0) { dragging = false; return; }
+    startY = e.touches[0].clientY; delta = 0; dragging = true;
+    sheet.style.transition = 'none';
+  }, { passive: true });
+  sheet.addEventListener('touchmove', (e) => {
+    if (!dragging) return;
+    delta = e.touches[0].clientY - startY;
+    if (delta > 0) {
+      e.preventDefault(); // ← これでスワイプがPWA本体に伝わらない（勝手に閉じない）
+      sheet.style.transform = `translateY(${delta}px)`;
+    }
+  }, { passive: false });
+  const end = () => {
+    if (!dragging) return;
+    dragging = false;
+    sheet.style.transition = 'transform 0.22s cubic-bezier(0.22,1,0.36,1)';
+    if (delta > 90) closeSheet();      // しっかり下げたら閉じる
+    else sheet.style.transform = '';   // 少しなら元に戻す
+  };
+  sheet.addEventListener('touchend', end);
+  sheet.addEventListener('touchcancel', end);
 }
 
 // 部品づくりの近道
@@ -467,6 +578,21 @@ function snsBadge(sns) {
   const i = el('span', 'row-ico', sns.icon);
   i.style.background = sns.color;
   return i;
+}
+
+// アイコン要素（noteのプロフィール画像があればそれを、なければ絵文字を表示）
+function makeAvatar(p) {
+  const av = el('div', 'avatar');
+  const img = p && p.accounts && p.accounts.note && p.accounts.note.image;
+  if (img) {
+    const im = document.createElement('img');
+    im.src = img; im.alt = ''; im.loading = 'lazy';
+    im.addEventListener('error', () => { im.remove(); av.textContent = p.avatar || '🙂'; });
+    av.appendChild(im);
+  } else {
+    av.textContent = p.avatar || '🙂';
+  }
+  return av;
 }
 
 /* -----------------------------------------------------------
@@ -498,6 +624,21 @@ function buildAddStepHandle(sheet) {
   const sns = snsByKey(addDraft.snsKey);
   sheet.appendChild(backBtn(() => renderSheet(buildAddStepSNS)));
   sheet.appendChild(titleEl(`${sns.label} のユーザー名`));
+
+  // note は「フォロー中から選ぶ」も用意（自分のnote IDが要る・任意入力）
+  if (sns.key === 'note') {
+    const follow = el('button', 'row-btn'); follow.type = 'button';
+    const fi = el('span', 'row-ico', '📋'); fi.style.background = 'var(--lavender)'; follow.appendChild(fi);
+    const fm = el('div', 'row-main');
+    fm.appendChild(el('span', null, 'フォロー中から選ぶ'));
+    fm.appendChild(el('small', null, 'あなたのnoteのフォロー中を一覧で表示'));
+    follow.appendChild(fm); follow.appendChild(el('span', 'row-arrow', '›'));
+    follow.addEventListener('click', () => {
+      renderSheet(getMyNoteId() ? buildAddFollowings : buildAddAskMyId);
+    });
+    sheet.appendChild(follow);
+    sheet.appendChild(el('div', 'sheet-section-label', 'または ユーザー名を入れる'));
+  }
 
   const field = el('div', 'field');
   field.appendChild(el('label', 'field-label', 'ユーザー名'));
@@ -629,12 +770,13 @@ function buildAddStepNew(sheet) {
   nameField.appendChild(el('label', 'field-label', '名前（あとで変えられます）'));
   const nameInput = el('input', 'text-input');
   nameInput.type = 'text';
-  nameInput.value = addDraft.name != null ? addDraft.name : addDraft.handle;
+  nameInput.value = addDraft.name != null ? addDraft.name : (addDraft.prefillName || addDraft.handle);
   nameInput.placeholder = '名前';
   nameField.appendChild(nameInput);
   sheet.appendChild(nameField);
 
   sheet.appendChild(el('div', 'field-label', 'アイコン'));
+  if (addDraft.noteImage) sheet.appendChild(el('div', 'field-hint', 'noteのアイコン画像を使います（絵文字は予備です）'));
   let chosen = addDraft.avatar || AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)];
   const grid = buildEmojiGrid(chosen, (v) => { chosen = v; });
   sheet.appendChild(grid);
@@ -645,7 +787,10 @@ function buildAddStepNew(sheet) {
   add.addEventListener('click', async () => {
     const name = (nameInput.value || '').trim() || addDraft.handle;
     const isNote = addDraft.snsKey === 'note';
-    await createPerson({ name, avatar: chosen, snsKey: addDraft.snsKey, handle: addDraft.handle });
+    await createPerson({
+      name, avatar: chosen, snsKey: addDraft.snsKey, handle: addDraft.handle,
+      noteImage: addDraft.noteImage, noteNickname: addDraft.noteNickname,
+    });
     closeSheet();
     renderAll();
     toast(`「${name}」を追加しました`);
@@ -664,7 +809,7 @@ function buildAddStepPick(sheet) {
   const people = state.people.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   for (const p of people) {
     const row = el('button', 'pick-person'); row.type = 'button';
-    const av = el('div', 'avatar', p.avatar || '🙂');
+    const av = makeAvatar(p);
     const nm = el('div', 'pp-name', p.name);
     const tags = el('div', 'pp-tags');
     for (const k of orderedAccountKeys(p)) {
@@ -674,6 +819,100 @@ function buildAddStepPick(sheet) {
     row.addEventListener('click', () => attachToPerson(p, addDraft.snsKey, addDraft.handle));
     sheet.appendChild(row);
   }
+}
+
+// 8-5 フォロー中から選ぶ：自分のnote IDを一度だけ聞く（端末に保存して使い回す）
+function buildAddAskMyId(sheet) {
+  sheet.appendChild(backBtn(() => renderSheet(buildAddStepHandle)));
+  sheet.appendChild(titleEl('あなたの note ID'));
+  sheet.appendChild(subEl('フォロー中の一覧を出すために一度だけ教えてね（ログインではありません）'));
+
+  const field = el('div', 'field');
+  field.appendChild(el('label', 'field-label', 'あなたの note ID'));
+  const input = el('input', 'text-input');
+  input.type = 'text'; input.placeholder = '例：nem_artstory';
+  input.autocomplete = 'off'; input.autocapitalize = 'off'; input.spellcheck = false;
+  input.value = getMyNoteId();
+  field.appendChild(input);
+  field.appendChild(el('div', 'field-hint', 'note.com/ のあとのあなたのID（@はいりません）'));
+  sheet.appendChild(field);
+
+  const go = el('button', 'btn btn-primary btn-block', 'フォロー中を見る'); go.type = 'button';
+  sheet.appendChild(go);
+  const submit = () => {
+    const id = normalizeHandle(input.value, snsByKey('note'));
+    if (!id) { toast('IDを入れてね'); return; }
+    setMyNoteId(id);
+    renderSheet(buildAddFollowings);
+  };
+  go.addEventListener('click', submit);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  setTimeout(() => input.focus(), 50);
+}
+
+// 8-6 フォロー中の一覧（中継ごしに取得して表示・タップで追加へ）
+async function buildAddFollowings(sheet) {
+  const myId = getMyNoteId();
+  sheet.appendChild(backBtn(() => renderSheet(buildAddStepHandle)));
+  sheet.appendChild(titleEl('フォロー中から選ぶ'));
+
+  const sub = el('div', 'sheet-sub');
+  sub.appendChild(document.createTextNode(`あなた：@${myId}　`));
+  const chg = el('button', 'linklike', 'IDを変更'); chg.type = 'button';
+  chg.addEventListener('click', () => renderSheet(buildAddAskMyId));
+  sub.appendChild(chg);
+  sheet.appendChild(sub);
+
+  const status = el('div', 'follow-status', '読み込み中…');
+  sheet.appendChild(status);
+  const listWrap = el('div');
+  sheet.appendChild(listWrap);
+
+  let followings = [];
+  try {
+    followings = await fetchNoteFollowings(myId);
+  } catch (_) {
+    status.textContent = '取得できませんでした。IDが正しいか確認してね。';
+    return;
+  }
+  if (!followings.length) { status.textContent = 'フォロー中が見つかりませんでした。'; return; }
+  status.remove();
+
+  for (const c of followings) {
+    const owner = findAccountOwner('note', c.urlname);
+    const row = el('button', 'pick-person'); row.type = 'button';
+    const av = el('div', 'avatar');
+    if (c.image) {
+      const im = document.createElement('img');
+      im.src = c.image; im.alt = ''; im.loading = 'lazy';
+      im.addEventListener('error', () => { im.remove(); av.textContent = '🙂'; });
+      av.appendChild(im);
+    } else { av.textContent = '🙂'; }
+    const nm = el('div', 'pp-name', c.nickname || c.urlname);
+    row.append(av, nm);
+    if (owner) {
+      row.appendChild(el('span', 'pp-added', '追加ずみ'));
+      row.addEventListener('click', () => { closeSheet(); openDetailSheet(owner.id); });
+    } else {
+      row.appendChild(el('span', 'row-arrow', '›'));
+      row.addEventListener('click', () => pickFollowing(c));
+    }
+    listWrap.appendChild(row);
+  }
+}
+
+// フォロー中の一覧から1人えらんだ：その人を追加する流れへ（名前・アイコンを引き継ぐ）
+function pickFollowing(c) {
+  addDraft.snsKey = 'note';
+  addDraft.handle = c.urlname;
+  addDraft.handleRaw = c.urlname;
+  addDraft.prefillName = c.nickname || c.urlname;
+  addDraft.noteImage = c.image || null;
+  addDraft.noteNickname = c.nickname || null;
+  const owner = findAccountOwner('note', c.urlname);
+  if (owner) { addDraft.dupOwnerId = owner.id; renderSheet((s) => buildAddDuplicate(s, owner.id)); return; }
+  addDraft.dupOwnerId = null;
+  renderSheet(buildAddStepNew);
 }
 
 /* 既存の人にSNSを足す（重複していたら置き換え確認） */
@@ -701,13 +940,17 @@ async function commitAttach(person, snsKey, handle, replaced) {
   if (snsKey === 'note') refreshNotes().catch(() => {});
 }
 
-async function createPerson({ name, avatar, snsKey, handle }) {
+async function createPerson({ name, avatar, snsKey, handle, noteImage, noteNickname }) {
   const maxOrder = state.people.reduce((m, p) => Math.max(m, p.order || 0), 0);
   const person = {
     id: uid(), name, avatar: avatar || '🙂', order: maxOrder + 1,
     accounts: {}, today: { date: todayStr(), seen: [], doneManual: false },
   };
   person.accounts[snsKey] = makeAccount(snsKey, handle);
+  if (snsKey === 'note') {
+    if (noteImage) person.accounts.note.image = noteImage;
+    if (noteNickname) person.accounts.note.nickname = noteNickname;
+  }
   state.people.push(person);
   await idbPut(person);
   return person;
@@ -727,7 +970,7 @@ function buildDetail(sheet, id) {
 
   // ヘッダー
   const head = el('div'); head.style.textAlign = 'center'; head.style.margin = '4px 0 8px';
-  const av = el('div', 'avatar', p.avatar || '🙂');
+  const av = makeAvatar(p);
   av.style.margin = '0 auto 8px'; av.style.width = '56px'; av.style.height = '56px'; av.style.fontSize = '30px';
   head.appendChild(av);
   head.appendChild(titleEl(p.name));
@@ -1012,6 +1255,9 @@ function toast(msg) {
 function bindGlobal() {
   $('#fab').addEventListener('click', openAddSheet);
   $('#backdrop').addEventListener('click', closeSheet);
+  // 背景の上スワイプ等がPWA本体に伝わらないように（誤って閉じるのを防ぐ）
+  $('#backdrop').addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
+  enableSheetDrag($('#sheet')); // シートを下スワイプで閉じられるように
 
   const refreshBtn = $('#refresh');
   if (refreshBtn) {
