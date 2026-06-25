@@ -81,6 +81,18 @@ function makeAccount(key, handle) {
   return acc;
 }
 
+// 同じSNS＋同じID（ハンドル）を既に持っている人を探す（重複の自動検出に使う）
+// exceptId を渡すと、その人は除外して探す（自分自身との重複は無視）
+function findAccountOwner(snsKey, handle, exceptId) {
+  const norm = (handle || '').trim().toLowerCase();
+  if (!norm) return null;
+  return state.people.find((p) =>
+    p.id !== exceptId &&
+    p.accounts && p.accounts[snsKey] &&
+    (p.accounts[snsKey].handle || '').trim().toLowerCase() === norm
+  ) || null;
+}
+
 // 入力されたユーザー名をきれいにする（URLを貼っても大丈夫にする）
 function normalizeHandle(raw, sns) {
   let h = (raw || '').trim();
@@ -384,6 +396,14 @@ function buildAddStepHandle(sheet) {
     if (!clean) return;
     addDraft.handle = clean;
     addDraft.handleRaw = input.value;
+    // 同じSNS＋同じIDが既にある？ → 黙って別人を作らず確認（別人として追加/紐付け/やめる）
+    const owner = findAccountOwner(addDraft.snsKey, clean);
+    if (owner) {
+      addDraft.dupOwnerId = owner.id;
+      renderSheet((s) => buildAddDuplicate(s, owner.id));
+      return;
+    }
+    addDraft.dupOwnerId = null;
     if (state.people.length === 0) renderSheet(buildAddStepNew); // 誰もいなければ新規へ直行
     else renderSheet(buildAddStepWho);
   };
@@ -418,11 +438,58 @@ function buildAddStepWho(sheet) {
   sheet.appendChild(bExist);
 }
 
+// 8-3b 同じSNS＋同じIDが既にある時の3択（別人として追加 / 既存に紐付け / やめる）
+function buildAddDuplicate(sheet, ownerId) {
+  const sns = snsByKey(addDraft.snsKey);
+  const owner = getPerson(ownerId);
+  if (!owner) { renderSheet(buildAddStepWho); return; }
+
+  sheet.appendChild(backBtn(() => renderSheet(buildAddStepHandle)));
+  sheet.appendChild(titleEl('もう登録ずみみたい'));
+  sheet.appendChild(subEl(`「${displayHandle(sns, addDraft.handle)}」は すでに「${owner.name}」に登録されています。`));
+
+  // 1) 既存の人に紐付け（＝同じ人だった。重複を作らない）
+  const link = el('button', 'row-btn'); link.type = 'button';
+  const li = el('span', 'row-ico', '🔗'); li.style.background = 'var(--lavender)'; link.appendChild(li);
+  const lm = el('div', 'row-main');
+  lm.appendChild(el('span', null, `「${owner.name}」に紐付け`));
+  lm.appendChild(el('small', null, '同じ人にまとめます（重複を作りません）'));
+  link.appendChild(lm); link.appendChild(el('span', 'row-arrow', '›'));
+  link.addEventListener('click', () => {
+    closeSheet();
+    openDetailSheet(owner.id);
+    toast(`「${owner.name}」に登録ずみです`);
+  });
+  sheet.appendChild(link);
+
+  // 2) 別人として追加（サブ垢など、意図的に別カード）
+  const asNew = el('button', 'row-btn'); asNew.type = 'button';
+  const ni = el('span', 'row-ico', '＋'); ni.style.background = 'var(--lavender-dark)'; asNew.appendChild(ni);
+  const nm = el('div', 'row-main');
+  nm.appendChild(el('span', null, '別人として追加'));
+  nm.appendChild(el('small', null, 'サブ垢など、別の人として新しく登録します'));
+  asNew.appendChild(nm); asNew.appendChild(el('span', 'row-arrow', '›'));
+  asNew.addEventListener('click', () => renderSheet(buildAddStepNew));
+  sheet.appendChild(asNew);
+
+  // 3) やめる
+  const stop = el('button', 'row-btn'); stop.type = 'button';
+  const si = el('span', 'row-ico', '×'); si.style.background = 'var(--ink-soft)'; stop.appendChild(si);
+  const sm = el('div', 'row-main'); sm.appendChild(el('span', null, 'やめる'));
+  stop.appendChild(sm);
+  stop.addEventListener('click', () => closeSheet());
+  sheet.appendChild(stop);
+}
+
 // 8-4a 新しい人（名前＋アバター）
 function buildAddStepNew(sheet) {
   const sns = snsByKey(addDraft.snsKey);
-  const hasWhoStep = state.people.length > 0;
-  sheet.appendChild(backBtn(() => renderSheet(hasWhoStep ? buildAddStepWho : buildAddStepHandle)));
+  const back = () => {
+    if (addDraft.dupOwnerId) renderSheet((s) => buildAddDuplicate(s, addDraft.dupOwnerId));
+    else if (state.people.length > 0) renderSheet(buildAddStepWho);
+    else renderSheet(buildAddStepHandle);
+  };
+  sheet.appendChild(backBtn(back));
   sheet.appendChild(titleEl('新しい人'));
   sheet.appendChild(subEl(`${sns.label}：${displayHandle(sns, addDraft.handle)}`));
 
@@ -481,7 +548,7 @@ function attachToPerson(person, snsKey, handle) {
   if (person.accounts && person.accounts[snsKey]) {
     confirmDialog({
       title: `すでに${sns.label}登録ずみ`,
-      body: `${person.name}さんは すでに ${sns.label} が登録されています。\n新しい「${displayHandle(sns, handle)}」に置き換えますか？`,
+      body: `「${person.name}」は すでに ${sns.label} が登録されています。\n新しい「${displayHandle(sns, handle)}」に置き換えますか？`,
       okLabel: '置き換える',
       onOk: () => commitAttach(person, snsKey, handle, true),
     });
@@ -496,7 +563,7 @@ async function commitAttach(person, snsKey, handle, replaced) {
   await idbPut(person);
   closeSheet();
   renderAll();
-  toast(replaced ? `${person.name}さんの ${sns.label} を変えました` : `${person.name}さんに ${sns.label} を足しました`);
+  toast(replaced ? `「${person.name}」の ${sns.label} を変えました` : `「${person.name}」に ${sns.label} を足しました`);
 }
 
 async function createPerson({ name, avatar, snsKey, handle }) {
@@ -625,7 +692,7 @@ function buildDetailAddSNS(sheet, id) {
   if (!p) { closeSheet(); return; }
   sheet.appendChild(backBtn(() => renderSheet((s) => buildDetail(s, id))));
   sheet.appendChild(titleEl('SNSを足す'));
-  sheet.appendChild(subEl(`${p.name}さんに追加`));
+  sheet.appendChild(subEl(`「${p.name}」に追加`));
   const remaining = SNS_REGISTRY.filter((s) => !p.accounts[s.key]);
   for (const s of remaining) {
     const b = el('button', 'row-btn'); b.type = 'button';
@@ -644,7 +711,7 @@ function buildDetailAddHandle(sheet, id, snsKey) {
   if (!p) { closeSheet(); return; }
   sheet.appendChild(backBtn(() => renderSheet((s) => buildDetailAddSNS(s, id))));
   sheet.appendChild(titleEl(`${sns.label} のユーザー名`));
-  sheet.appendChild(subEl(`${p.name}さんに追加`));
+  sheet.appendChild(subEl(`「${p.name}」に追加`));
 
   const field = el('div', 'field');
   field.appendChild(el('label', 'field-label', 'ユーザー名'));
@@ -667,13 +734,27 @@ function buildDetailAddHandle(sheet, id, snsKey) {
     add.disabled = !clean;
   };
   const submit = async () => {
-    const clean = normalizeHandle(input.value, sns);
-    if (!clean) return;
-    p.accounts[snsKey] = makeAccount(snsKey, clean);
-    await idbPut(p);
-    renderAll();
-    renderSheet((s) => buildDetail(s, id));
-    toast(`${sns.label} を足しました`);
+    const handle = normalizeHandle(input.value, sns);
+    if (!handle) return;
+    const doAttach = async () => {
+      p.accounts[snsKey] = makeAccount(snsKey, handle);
+      await idbPut(p);
+      renderAll();
+      renderSheet((s) => buildDetail(s, id));
+      toast(`${sns.label} を足しました`);
+    };
+    // 同じSNS＋同じIDを別の人が持っていないか（同じ口座を2人に付けないように）
+    const owner = findAccountOwner(snsKey, handle, id);
+    if (owner) {
+      confirmDialog({
+        title: 'もう登録ずみみたい',
+        body: `「${displayHandle(sns, handle)}」は すでに「${owner.name}」に登録されています。それでも「${p.name}」に付けますか？`,
+        okLabel: 'それでも付ける',
+        onOk: () => { doAttach(); },
+      });
+      return;
+    }
+    doAttach();
   };
   input.addEventListener('input', update);
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !add.disabled) submit(); });
@@ -690,7 +771,7 @@ function removeSNS(id, key) {
   if (count <= 1) {
     confirmDialog({
       title: 'この人を削除しますか？',
-      body: `${sns.label} は ${p.name}さんの最後のSNSです。\n外すと「${p.name}」はおきにから消えます。`,
+      body: `${sns.label} は 「${p.name}」の最後のSNSです。\n外すと「${p.name}」はおきにから消えます。`,
       danger: true, okLabel: '削除する',
       onOk: () => deletePerson(id),
     });
@@ -698,7 +779,7 @@ function removeSNS(id, key) {
   }
   confirmDialog({
     title: `${sns.label} を外しますか？`,
-    body: `${p.name}さんから ${sns.label} を外します。`,
+    body: `「${p.name}」から ${sns.label} を外します。`,
     danger: true, okLabel: '外す',
     onOk: async () => {
       delete p.accounts[key];
