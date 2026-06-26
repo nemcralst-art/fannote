@@ -450,9 +450,69 @@ async function seedIfFirstRun() {
 }
 
 /* -----------------------------------------------------------
+   5.5 日次チェック・沈み・リセット（Phase 3）
+   ----------------------------------------------------------- */
+// 沈み判定に数える account のキー（countsForDaily=true のSNS）
+function countingKeys(p) {
+  return orderedAccountKeys(p).filter((k) => { const s = snsByKey(k); return s && s.countsForDaily; });
+}
+function isSeen(p, key) { return !!(p.today && p.today.seen && p.today.seen.includes(key)); }
+// 「いま見ている範囲」で done（沈み）か判定
+function isDone(p, filter) {
+  const t = p.today || {};
+  if (t.doneManual) return true;
+  if (filter && filter !== 'all') return isSeen(p, filter);   // 単一SNS表示：そのSNSを見たら済み
+  const keys = countingKeys(p);                                // すべて表示：数えるSNSを全部見たら済み
+  return keys.length > 0 && keys.every((k) => isSeen(p, k));
+}
+// 端末ローカル日付が変わっていたら今日の記録をリセット（全員上に戻る）
+async function ensureToday() {
+  const today = todayStr();
+  let changed = false;
+  for (const p of state.people) {
+    if (!p.today || p.today.date !== today) {
+      p.today = { date: today, seen: [], doneManual: false };
+      await idbPut(p);
+      changed = true;
+    }
+  }
+  return changed;
+}
+// 「今日はこの人OK」/「まだに戻す」
+async function setDoneManual(p, val) {
+  if (!p.today) p.today = { date: todayStr(), seen: [], doneManual: false };
+  if (val) p.today.doneManual = true;
+  else { p.today.doneManual = false; p.today.seen = []; } // まだに戻す＝今日の記録をクリア
+  await idbPut(p);
+  renderAll();
+}
+
+/* -----------------------------------------------------------
    6. 画面を描く
    ----------------------------------------------------------- */
-function renderAll() { renderChips(); renderList(); }
+function renderAll() { renderChips(); renderProgress(); renderList(); }
+
+// 今日の進捗（フィルター連動：すべて＝全員の済み人数／単一SNS＝そのSNSの済み人数）
+function renderProgress() {
+  const box = $('#progress');
+  if (!box) return;
+  const filter = state.filter;
+  let people = state.people.slice();
+  let label = '';
+  if (filter !== 'all') {
+    const s = snsByKey(filter); label = s ? s.label + ' ' : '';
+    people = people.filter((p) => p.accounts && p.accounts[filter]);
+  }
+  const total = people.length;
+  const doneCount = people.filter((p) => isDone(p, filter)).length;
+  const pct = total ? Math.round((doneCount / total) * 100) : 0;
+  box.innerHTML = '';
+  box.appendChild(el('div', 'progress-text', `今日 ${label}${doneCount}/${total} 見た`));
+  const track = el('div', 'progress-track');
+  const fill = el('div', 'progress-fill'); fill.style.width = pct + '%';
+  track.appendChild(fill);
+  box.appendChild(track);
+}
 
 function renderChips() {
   const el = $('#chips');
@@ -476,13 +536,24 @@ function renderChips() {
 }
 
 function renderList() {
-  const el = $('#list');
-  el.innerHTML = '';
+  const box = $('#list');
+  box.innerHTML = '';
   let people = state.people.slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   if (state.filter !== 'all') people = people.filter((p) => p.accounts && p.accounts[state.filter]);
 
-  if (people.length === 0) { el.appendChild(emptyState()); return; }
-  for (const p of people) el.appendChild(personCard(p));
+  if (people.length === 0) { box.appendChild(emptyState()); return; }
+  const notYet = people.filter((p) => !isDone(p, state.filter));
+  const done = people.filter((p) => isDone(p, state.filter));
+  for (const p of notYet) box.appendChild(personCard(p, false));
+  if (done.length) {
+    box.appendChild(doneDivider());
+    for (const p of done) box.appendChild(personCard(p, true));
+  }
+}
+function doneDivider() {
+  const d = el('div', 'done-divider');
+  d.appendChild(el('span', null, '今日チェック済み'));
+  return d;
 }
 
 function emptyState() {
@@ -500,9 +571,9 @@ function emptyState() {
   return box;
 }
 
-function personCard(p) {
+function personCard(p, done) {
   const card = document.createElement('div');
-  card.className = 'card';
+  card.className = 'card' + (done ? ' is-done' : '');
 
   const top = document.createElement('div');
   top.className = 'card-top';
@@ -531,23 +602,16 @@ function personCard(p) {
     const s = snsByKey(key);
     if (!s) continue;
     const acc = p.accounts[key];
+    const seen = isSeen(p, key);
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'sns-btn';
+    btn.className = 'sns-btn' + (seen ? ' is-seen' : '');
     btn.style.background = s.color;
+    if (seen) btn.appendChild(el('span', 'sns-check', '✓'));
     const lab = document.createElement('span'); lab.textContent = s.label;
     btn.append(lab); // SNS名だけ表示（IDは詳細シートで確認）
     if (key === 'note' && isNoteNew(acc)) btn.appendChild(el('span', 'new-badge', 'NEW'));
-    btn.addEventListener('click', () => {
-      if (key === 'note') {
-        // NEWがあれば新しい記事へ直行、なければプロフィールへ。どちらでも見たら既読に。
-        const goNew = isNoteNew(acc) && acc.latest && acc.latest.url;
-        openExternal(goNew ? acc.latest.url : buildUrl(s, acc.handle));
-        markNoteSeen(p);
-        return;
-      }
-      openUrl(s, acc.handle);
-    });
+    btn.addEventListener('click', () => openAndSeen(p, key));
     snsRow.appendChild(btn);
   }
   card.appendChild(snsRow);
@@ -567,6 +631,24 @@ function openExternal(url) {
   }
 }
 function openUrl(sns, handle) { openExternal(buildUrl(sns, handle)); }
+
+// SNSを開く＝「今日見た」に記録（✓）。noteは新着も既読にしてNEWを消す。
+async function openAndSeen(p, key) {
+  const s = snsByKey(key);
+  const acc = p.accounts[key];
+  if (key === 'note') {
+    const goNew = isNoteNew(acc) && acc.latest && acc.latest.url;
+    openExternal(goNew ? acc.latest.url : buildUrl(s, acc.handle)); // ジェスチャー内で即開く
+    if (acc.latest) acc.lastSeenArticleId = acc.latest.id;          // NEWを消す
+  } else {
+    openUrl(s, acc.handle);
+  }
+  if (!p.today) p.today = { date: todayStr(), seen: [], doneManual: false };
+  if (!p.today.seen) p.today.seen = [];
+  if (!p.today.seen.includes(key)) p.today.seen.push(key);
+  await idbPut(p);
+  renderAll();
+}
 
 /* -----------------------------------------------------------
    7. シート（下から出る画面）の土台
@@ -1053,6 +1135,21 @@ function buildDetail(sheet, id) {
   head.appendChild(titleEl(p.name));
   sheet.appendChild(head);
 
+  // 今日チェック（✓今日はこの人OK ／ ↩まだに戻す）
+  const doneNow = isDone(p, state.filter);
+  const tdy = el('button', 'row-btn'); tdy.type = 'button';
+  const tdyIco = el('span', 'row-ico', doneNow ? '↩' : '✓');
+  tdyIco.style.background = doneNow ? 'var(--ink-soft)' : 'var(--lavender)';
+  tdy.appendChild(tdyIco);
+  tdy.appendChild((() => {
+    const m = el('div', 'row-main');
+    m.appendChild(el('span', null, doneNow ? 'まだに戻す' : '今日はこの人OK'));
+    m.appendChild(el('small', null, doneNow ? '「まだ」に戻して上に表示します' : 'チェック済みにして下に送ります'));
+    return m;
+  })());
+  tdy.addEventListener('click', async () => { await setDoneManual(p, !doneNow); renderSheet((s) => buildDetail(s, id)); });
+  sheet.appendChild(tdy);
+
   // 名前・アイコンを編集
   const edit = el('button', 'row-btn'); edit.type = 'button';
   const ei = el('span', 'row-ico', '✎'); ei.style.background = 'var(--lavender)';
@@ -1107,8 +1204,10 @@ function buildDetail(sheet, id) {
     art.appendChild(el('span', 'row-arrow', '›'));
     art.addEventListener('click', () => {
       openExternal(noteAcc.latest.url);
-      markNoteSeen(p);
-      renderSheet((s) => buildDetail(s, id));
+      if (noteAcc.latest) noteAcc.lastSeenArticleId = noteAcc.latest.id; // NEWを消す
+      if (!p.today) p.today = { date: todayStr(), seen: [], doneManual: false };
+      if (!p.today.seen.includes('note')) p.today.seen.push('note');     // 今日見たに記録
+      idbPut(p).then(() => { renderAll(); renderSheet((s) => buildDetail(s, id)); });
     });
     sheet.appendChild(art);
   } else if (noteAcc && noteAcc.fetchError) {
@@ -1376,6 +1475,14 @@ function bindGlobal() {
       else toast('新着はありません');
     });
   }
+
+  // 日付がまたいだら自動リセット（起動時＋フォーカス復帰時／深夜またぎ対応）
+  const onResume = async () => {
+    if (document.visibilityState !== 'visible') return;
+    if (await ensureToday()) renderAll();
+  };
+  document.addEventListener('visibilitychange', onResume);
+  window.addEventListener('focus', onResume);
 }
 
 function registerSW() {
@@ -1391,6 +1498,7 @@ async function init() {
     await openDB();
     state.people = await idbGetAll();
     await seedIfFirstRun();
+    await ensureToday(); // 端末日付が変わっていれば今日の記録をリセット
   } catch (e) {
     console.error(e);
     toast('データの読み込みに失敗しました');

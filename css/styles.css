@@ -124,6 +124,12 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   display: inline-block;
 }
 
+/* ===== 今日の進捗 ===== */
+.progress { padding: 2px 16px 6px; }
+.progress-text { font-size: 13px; font-weight: 700; color: var(--ink-soft); margin-bottom: 6px; }
+.progress-track { height: 8px; border-radius: 999px; background: var(--lavender-soft); overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 999px; background: var(--lavender); transition: width 0.3s ease; }
+
 /* ===== リスト ===== */
 .list {
   padding: 8px 16px 24px;
@@ -131,6 +137,20 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
   flex-direction: column;
   gap: 12px;
 }
+
+/* 今日チェック済みの仕切り */
+.done-divider {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--ink-soft); font-size: 12px; font-weight: 700;
+  margin: 4px 2px;
+}
+.done-divider::before, .done-divider::after {
+  content: ''; flex: 1 1 auto; height: 1px; background: var(--lavender-line);
+}
+/* 済みカードは薄く */
+.card.is-done { opacity: 0.55; }
+/* 開いたSNSボタンの✓ */
+.sns-btn .sns-check { font-size: 13px; font-weight: 900; line-height: 1; }
 
 /* ===== 人カード ===== */
 .card {
