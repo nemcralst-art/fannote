@@ -234,29 +234,48 @@ function extractCreator(it) {
   return null;
 }
 
-// JSONのどこにあっても「creatorの配列」を見つけて返す（キー名に依存しない）
-function findCreatorArray(node, depth) {
-  if (!node || depth > 6) return null;
+// JSON内の「creator配列」を全部あつめる（見つかったキー名つき・キー名に依存しない）
+function collectCreatorArrays(node, depth, acc, key) {
+  if (!node || depth > 6) return;
   if (Array.isArray(node)) {
     const mapped = [];
     for (const it of node) { const c = extractCreator(it); if (c) mapped.push(c); }
-    if (mapped.length) return mapped;
-    for (const it of node) { const f = findCreatorArray(it, depth + 1); if (f) return f; }
-    return null;
+    if (mapped.length) { acc.push({ key: key || '', arr: mapped }); return; }
+    for (const it of node) collectCreatorArrays(it, depth + 1, acc, key);
+    return;
   }
   if (typeof node === 'object') {
-    for (const k in node) { const f = findCreatorArray(node[k], depth + 1); if (f) return f; }
+    for (const k in node) collectCreatorArrays(node[k], depth + 1, acc, k);
   }
-  return null;
+}
+// その応答から本命の creator 配列を選ぶ。
+// preferKey があればそのキーの配列を使う（ページ送りで「おすすめ」等の小配列に化けない）。
+// 初回は「followを含むキー」を優先、無ければいちばん大きい配列。
+function chooseCreatorArray(node, preferKey) {
+  const acc = [];
+  collectCreatorArrays(node, 0, acc, '');
+  if (!acc.length) return { key: preferKey || '', arr: [] };
+  if (preferKey) {
+    const same = acc.filter((x) => x.key === preferKey);
+    if (!same.length) return { key: preferKey, arr: [] }; // 本命キーが無い＝終端
+    same.sort((a, b) => b.arr.length - a.arr.length);
+    return same[0];
+  }
+  const follow = acc.filter((x) => /follow/i.test(x.key));
+  const pool = follow.length ? follow : acc;
+  pool.sort((a, b) => b.arr.length - a.arr.length);
+  return pool[0];
 }
 
 // 失敗時に原因を伝えるための控えめなメモ（フォロー中の取得がうまくいかない時だけ表示）
 let _followDebug = '';
 
 // 自分のフォロー中の一覧を取りに行く（形が違っても拾えるように総当たりで解析）
-async function fetchNoteFollowings(myId, maxPages = 6) {
+async function fetchNoteFollowings(myId, maxPages = 20) {
   const out = [];
   const seen = new Set();
+  const pagesInfo = [];
+  let mainKey = null;
   _followDebug = '';
   for (let page = 1; page <= maxPages; page++) {
     const path = `/api/v2/creators/${myId}/followings?page=${page}`;
@@ -274,11 +293,16 @@ async function fetchNoteFollowings(myId, maxPages = 6) {
     let json;
     try { json = JSON.parse(text); } catch (_) { json = null; }
     if (json && typeof json.contents === 'string') { try { json = JSON.parse(json.contents); } catch (_) {} }
-    const arr = findCreatorArray(json, 0) || [];
+    const chosen = chooseCreatorArray(json, mainKey);
+    if (page === 1) mainKey = chosen.key;
+    const arr = chosen.arr || [];
     let added = 0;
     for (const c of arr) { if (!seen.has(c.urlname)) { seen.add(c.urlname); out.push(c); added++; } }
-    if (added === 0) break; // これ以上は無い／形が違う
+    pagesInfo.push(`p${page}:${arr.length}/+${added}`);
+    if (added === 0) break;  // 本命キーのページが尽きた
+    if (!mainKey) break;     // 配列にキーが無い形は多ページ送りしない（誤混入防止）
   }
+  _followDebug += ' ｜ key=' + (mainKey || '(none)') + ' pages ' + pagesInfo.join(' ');
   return out;
 }
 
@@ -913,6 +937,11 @@ async function buildAddFollowings(sheet) {
   } catch (_) {
     status.textContent = '取得できませんでした。IDが正しいか確認してね。';
     return;
+  }
+  if (followings.length) {
+    status.remove();
+    const cnt = el('div', 'follow-count', `フォロー中 ${followings.length}人`);
+    sheet.insertBefore(cnt, listWrap);
   }
   if (!followings.length) {
     status.textContent = 'フォロー中が見つかりませんでした。';
