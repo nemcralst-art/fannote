@@ -223,24 +223,63 @@ async function fetchNoteCreator(handle) {
   };
 }
 
-// 自分のフォロー中の一覧を取りに行く（followers と同じ並びの followings 前提）
+// 1件のデータから「note creator」を取り出す（入れ子のゆれに強く）
+function extractCreator(it) {
+  if (!it || typeof it !== 'object') return null;
+  const cands = [it, it.user, it.creator, it.followingUser, it.followee, it.targetUser, it.note].filter(Boolean);
+  for (const c of cands) {
+    const urlname = pickNoteUrlname(c);
+    if (urlname) return { urlname, nickname: pickNoteNick(c) || urlname, image: pickNoteImage(c) };
+  }
+  return null;
+}
+
+// JSONのどこにあっても「creatorの配列」を見つけて返す（キー名に依存しない）
+function findCreatorArray(node, depth) {
+  if (!node || depth > 6) return null;
+  if (Array.isArray(node)) {
+    const mapped = [];
+    for (const it of node) { const c = extractCreator(it); if (c) mapped.push(c); }
+    if (mapped.length) return mapped;
+    for (const it of node) { const f = findCreatorArray(it, depth + 1); if (f) return f; }
+    return null;
+  }
+  if (typeof node === 'object') {
+    for (const k in node) { const f = findCreatorArray(node[k], depth + 1); if (f) return f; }
+  }
+  return null;
+}
+
+// 失敗時に原因を伝えるための控えめなメモ（フォロー中の取得がうまくいかない時だけ表示）
+let _followDebug = '';
+
+// 自分のフォロー中の一覧を取りに行く（形が違っても拾えるように総当たりで解析）
 async function fetchNoteFollowings(myId, maxPages = 6) {
   const out = [];
-  for (let page = 1; page <= maxPages; page++) {
-    const json = await noteFetchJson(noteProxyUrl(`/api/v2/creators/${myId}/followings?page=${page}`));
-    const d = (json && json.data) || json || {};
-    const list = d.followings || d.contents || d.users || (Array.isArray(d) ? d : []);
-    if (!Array.isArray(list) || list.length === 0) break;
-    for (const it of list) {
-      const c = it.user || it;
-      const urlname = pickNoteUrlname(c);
-      if (!urlname) continue;
-      out.push({ urlname, nickname: pickNoteNick(c) || urlname, image: pickNoteImage(c) });
-    }
-    if (d.isLastPage === true) break;
-  }
   const seen = new Set();
-  return out.filter((c) => (seen.has(c.urlname) ? false : (seen.add(c.urlname), true)));
+  _followDebug = '';
+  for (let page = 1; page <= maxPages; page++) {
+    const path = `/api/v2/creators/${myId}/followings?page=${page}`;
+    const res = await fetch(noteProxyUrl(path), { headers: { Accept: 'application/json' }, cache: 'no-store' });
+    const text = await res.text();
+    if (page === 1) {
+      let keys = '';
+      try {
+        const j = JSON.parse(text);
+        keys = 'top:[' + Object.keys(j || {}).join(',') + '] data:[' + Object.keys((j && j.data) || {}).join(',') + ']';
+      } catch (_) { keys = '(JSONではない応答)'; }
+      _followDebug = `path=${path} ｜ HTTP ${res.status} ｜ ${keys} ｜ ${text.slice(0, 180)}`;
+    }
+    if (!res.ok) { if (page === 1) throw new Error('HTTP ' + res.status); break; }
+    let json;
+    try { json = JSON.parse(text); } catch (_) { json = null; }
+    if (json && typeof json.contents === 'string') { try { json = JSON.parse(json.contents); } catch (_) {} }
+    const arr = findCreatorArray(json, 0) || [];
+    let added = 0;
+    for (const c of arr) { if (!seen.has(c.urlname)) { seen.add(c.urlname); out.push(c); added++; } }
+    if (added === 0) break; // これ以上は無い／形が違う
+  }
+  return out;
 }
 
 // 自分のnote ID（フォロー中一覧に使う）— 端末に保存して使い回す
@@ -875,7 +914,19 @@ async function buildAddFollowings(sheet) {
     status.textContent = '取得できませんでした。IDが正しいか確認してね。';
     return;
   }
-  if (!followings.length) { status.textContent = 'フォロー中が見つかりませんでした。'; return; }
+  if (!followings.length) {
+    status.textContent = 'フォロー中が見つかりませんでした。';
+    if (_followDebug) {
+      const more = el('button', 'linklike', 'うまくいかない時（開発用の詳細）'); more.type = 'button';
+      more.style.display = 'block'; more.style.margin = '10px auto 0';
+      const dbg = el('div', 'follow-status');
+      dbg.style.display = 'none'; dbg.style.fontSize = '11px'; dbg.style.wordBreak = 'break-all'; dbg.style.textAlign = 'left';
+      dbg.textContent = _followDebug;
+      more.addEventListener('click', () => { dbg.style.display = dbg.style.display === 'none' ? 'block' : 'none'; });
+      sheet.appendChild(more); sheet.appendChild(dbg);
+    }
+    return;
+  }
   status.remove();
 
   for (const c of followings) {
