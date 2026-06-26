@@ -536,8 +536,7 @@ function personCard(p) {
     btn.className = 'sns-btn';
     btn.style.background = s.color;
     const lab = document.createElement('span'); lab.textContent = s.label;
-    const hd = document.createElement('span'); hd.className = 'sns-handle'; hd.textContent = displayHandle(s, acc.handle);
-    btn.append(lab, hd);
+    btn.append(lab); // SNS名だけ表示（IDは詳細シートで確認）
     if (key === 'note' && isNoteNew(acc)) btn.appendChild(el('span', 'new-badge', 'NEW'));
     btn.addEventListener('click', () => {
       if (key === 'note') {
@@ -643,11 +642,12 @@ function snsBadge(sns) {
   return i;
 }
 
-// アイコン要素（noteのプロフィール画像があればそれを、なければ絵文字を表示）
+// アイコン要素（noteのプロフィール画像が既定／絵文字に変更されていれば絵文字）
 function makeAvatar(p) {
   const av = el('div', 'avatar');
   const img = p && p.accounts && p.accounts.note && p.accounts.note.image;
-  if (img) {
+  const useImg = img && p.avatarMode !== 'emoji'; // 詳細で絵文字に変えたら絵文字優先
+  if (useImg) {
     const im = document.createElement('img');
     im.src = img; im.alt = ''; im.loading = 'lazy';
     im.addEventListener('error', () => { im.remove(); av.textContent = p.avatar || '🙂'; });
@@ -838,11 +838,8 @@ function buildAddStepNew(sheet) {
   nameField.appendChild(nameInput);
   sheet.appendChild(nameField);
 
-  sheet.appendChild(el('div', 'field-label', 'アイコン'));
-  if (addDraft.noteImage) sheet.appendChild(el('div', 'field-hint', 'noteのアイコン画像を使います（絵文字は予備です）'));
-  let chosen = addDraft.avatar || AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)];
-  const grid = buildEmojiGrid(chosen, (v) => { chosen = v; });
-  sheet.appendChild(grid);
+  // アイコンは自動で既定（note＝取得した本物の画像／X・YouTube＝絵文字）。ここでは選ばせない。
+  const chosen = addDraft.avatar || AVATAR_EMOJIS[Math.floor(Math.random() * AVATAR_EMOJIS.length)];
 
   const add = el('button', 'btn btn-primary btn-block', 'この人を追加する');
   add.type = 'button';
@@ -1151,15 +1148,41 @@ function buildEditPerson(sheet, id) {
   sheet.appendChild(nameField);
 
   sheet.appendChild(el('div', 'field-label', 'アイコン'));
-  let chosen = p.avatar || '🙂';
-  sheet.appendChild(buildEmojiGrid(chosen, (v) => { chosen = v; }));
+  const noteImg = p.accounts && p.accounts.note && p.accounts.note.image;
+  // note画像があれば既定で「画像」、絵文字に変えていれば「絵文字」
+  let mode = (noteImg && p.avatarMode !== 'emoji') ? 'image' : 'emoji';
+  let chosen = (p.avatar && !/^https?:/.test(p.avatar)) ? p.avatar : AVATAR_EMOJIS[0];
+  if (noteImg) sheet.appendChild(el('div', 'field-hint', 'noteの人は本物の画像が既定。絵文字に変えることもできます。'));
+
+  const grid = el('div', 'emoji-grid');
+  const cells = [];
+  const refresh = () => cells.forEach((c) => {
+    const active = (mode === 'image' && c.dataset.kind === 'image') ||
+                   (mode === 'emoji' && c.dataset.kind === 'emoji' && c.dataset.emoji === chosen);
+    c.classList.toggle('is-active', active);
+  });
+  if (noteImg) {
+    const c = el('button', 'emoji-pick'); c.type = 'button'; c.dataset.kind = 'image';
+    const im = document.createElement('img'); im.src = noteImg; im.alt = 'note'; c.appendChild(im);
+    c.addEventListener('click', () => { mode = 'image'; refresh(); });
+    cells.push(c); grid.appendChild(c);
+  }
+  for (const e of AVATAR_EMOJIS) {
+    const c = el('button', 'emoji-pick', e); c.type = 'button'; c.dataset.kind = 'emoji'; c.dataset.emoji = e;
+    c.addEventListener('click', () => { mode = 'emoji'; chosen = e; refresh(); });
+    cells.push(c); grid.appendChild(c);
+  }
+  refresh();
+  sheet.appendChild(grid);
 
   const save = el('button', 'btn btn-primary btn-block', '保存する'); save.type = 'button';
   save.style.marginTop = '12px';
   save.addEventListener('click', async () => {
     const name = (nameInput.value || '').trim();
     if (!name) { toast('名前を入れてね'); return; }
-    p.name = name; p.avatar = chosen;
+    p.name = name;
+    if (mode === 'emoji') { p.avatar = chosen; p.avatarMode = 'emoji'; }
+    else { p.avatarMode = 'image'; } // noteの画像を使う（p.avatarは予備として残す）
     await idbPut(p);
     renderAll();
     renderSheet((s) => buildDetail(s, id));
