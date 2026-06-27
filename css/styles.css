@@ -64,18 +64,24 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 .header-refresh {
   flex: 0 0 auto;
   width: 52px; height: 52px;
+  padding: 0;                       /* 正方形を保つ（左右に余白を作らない） */
   border-radius: 16px;
   display: grid; place-items: center;
   color: var(--lavender-dark);
   background: var(--lavender-soft); /* 休止時も枠が見えてタップしやすい */
+}
+/* 押下は色だけ（scale等の変形は使わない＝回転が歪まない） */
+.header-refresh:active { background: var(--lavender-line); }
+/* アイコンは正方形の枠の中央に置く。回転はこの正方形に・中心origin で */
+.header-refresh-ico {
+  display: grid; place-items: center;
+  width: 33px; height: 33px;
   font-size: 33px; line-height: 1; font-weight: 700;
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
-.header-refresh:active { background: var(--lavender-line); transform: scale(0.94); }
-.header-refresh.is-spinning .header-refresh-ico {
-  display: inline-block;
-  animation: spin 0.8s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
+.header-refresh.is-spinning .header-refresh-ico { animation: spin 0.8s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .app-title {
   margin: 0;
   font-size: 21px;
