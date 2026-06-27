@@ -63,13 +63,14 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 }
 .header-refresh {
   flex: 0 0 auto;
-  width: 44px; height: 44px;
-  border-radius: 14px;
+  width: 52px; height: 52px;
+  border-radius: 16px;
   display: grid; place-items: center;
   color: var(--lavender-dark);
-  font-size: 27px; line-height: 1;
+  background: var(--lavender-soft); /* 休止時も枠が見えてタップしやすい */
+  font-size: 33px; line-height: 1; font-weight: 700;
 }
-.header-refresh:active { background: var(--lavender-soft); transform: scale(0.94); }
+.header-refresh:active { background: var(--lavender-line); transform: scale(0.94); }
 .header-refresh.is-spinning .header-refresh-ico {
   display: inline-block;
   animation: spin 0.8s linear infinite;
@@ -86,7 +87,7 @@ button { font-family: inherit; cursor: pointer; border: none; background: none; 
 /* ===== フィルターチップ ===== */
 .chips {
   position: sticky;
-  top: calc(70px + var(--safe-top));
+  top: calc(78px + var(--safe-top));
   z-index: 19;
   display: flex;
   gap: 8px;
