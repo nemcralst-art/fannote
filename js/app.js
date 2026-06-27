@@ -37,6 +37,14 @@ const SNS_REGISTRY = [
     help: '@ハンドル（@のあと）を入れてね',
     autoFetch: false, hasNew: false, countsForDaily: true,
   },
+  {
+    key: 'suno', label: 'Suno', icon: '🎵', color: '#F08A24',
+    urlTemplate: 'https://suno.com/@{handle}',
+    handlePrefix: '@',
+    placeholder: '例：noninoni',
+    help: 'suno.com/@ のあとのユーザー名を入れてね（@はあってもOK）',
+    autoFetch: false, hasNew: false, countsForDaily: true,
+  },
 ];
 
 const AVATAR_EMOJIS = ['🐰','🐱','🐶','🐻','🦊','🐼','🐨','🐹','🦄','🐧','🐤','🐸','🌸','🌷','⭐️','🍀','🎀','💜'];
@@ -556,6 +564,67 @@ function doneDivider() {
   return d;
 }
 
+/* -----------------------------------------------------------
+   6.5 並べ替え（ドラッグ）— グリップを掴んで上下、order を更新
+   ----------------------------------------------------------- */
+function dragAfter(list, y, dragEl) {
+  const cards = [...list.querySelectorAll('.card')].filter((c) => c !== dragEl);
+  for (const c of cards) {
+    const r = c.getBoundingClientRect();
+    if (y < r.top + r.height / 2) return c;
+  }
+  return null; // いちばん下
+}
+function startCardDrag(e, card) {
+  if (e.button != null && e.button > 0) return; // 左ボタン/タッチのみ
+  e.preventDefault();
+  e.stopPropagation();
+  const list = $('#list');
+  const grip = e.currentTarget;
+  try { grip.setPointerCapture(e.pointerId); } catch (_) {}
+  card.classList.add('is-dragging');
+  document.body.classList.add('reordering');
+
+  const onMove = (ev) => {
+    ev.preventDefault();
+    const after = dragAfter(list, ev.clientY, card);
+    if (after == null) {
+      const divider = list.querySelector('.done-divider');
+      if (divider) { if (card.nextSibling !== divider) list.insertBefore(card, divider); }
+      else if (list.lastElementChild !== card) list.appendChild(card);
+    } else if (after !== card && after !== card.nextSibling) {
+      list.insertBefore(card, after);
+    }
+  };
+  const onUp = async () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.removeEventListener('pointercancel', onUp);
+    card.classList.remove('is-dragging');
+    document.body.classList.remove('reordering');
+    await persistOrderFromDom();
+    renderAll();
+  };
+  document.addEventListener('pointermove', onMove, { passive: false });
+  document.addEventListener('pointerup', onUp);
+  document.addEventListener('pointercancel', onUp);
+}
+// 画面のカード並びを order に焼き込む（フィルター中は表示中の人だけ並べ替え）
+async function persistOrderFromDom() {
+  const ids = [...$('#list').querySelectorAll('.card')].map((c) => c.dataset.id).filter(Boolean);
+  if (!ids.length) return;
+  const globalIds = state.people.slice().sort((a, b) => (a.order || 0) - (b.order || 0)).map((p) => p.id);
+  const visible = new Set(ids);
+  const slots = [];
+  globalIds.forEach((id, i) => { if (visible.has(id)) slots.push(i); });
+  const newGlobal = globalIds.slice();
+  ids.forEach((id, k) => { newGlobal[slots[k]] = id; }); // 表示中の枠だけ新しい順に差し替え
+  for (let i = 0; i < newGlobal.length; i++) {
+    const p = getPerson(newGlobal[i]);
+    if (p && p.order !== i + 1) { p.order = i + 1; await idbPut(p); }
+  }
+}
+
 function emptyState() {
   const box = document.createElement('div');
   box.className = 'empty';
@@ -574,6 +643,7 @@ function emptyState() {
 function personCard(p, done) {
   const card = document.createElement('div');
   card.className = 'card' + (done ? ' is-done' : '');
+  card.dataset.id = p.id;
 
   const top = document.createElement('div');
   top.className = 'card-top';
@@ -593,7 +663,14 @@ function personCard(p, done) {
   menu.textContent = '⋯';
   menu.addEventListener('click', () => openDetailSheet(p.id));
 
-  top.append(av, name, menu);
+  const grip = document.createElement('button');
+  grip.type = 'button';
+  grip.className = 'card-grip';
+  grip.setAttribute('aria-label', 'つかんで並べ替え');
+  grip.textContent = '⠿';
+  grip.addEventListener('pointerdown', (e) => startCardDrag(e, card));
+
+  top.append(av, name, menu, grip);
   card.appendChild(top);
 
   const snsRow = document.createElement('div');
