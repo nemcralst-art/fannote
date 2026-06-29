@@ -53,8 +53,9 @@ const AVATAR_EMOJIS = ['🐰','🐱','🐶','🐻','🦊','🐼','🐨','🐹','
    2. 状態
    ----------------------------------------------------------- */
 const state = {
-  people: [],     // 人の配列
-  filter: 'all',  // 'all' か SNSキー
+  people: [],        // 人の配列
+  filter: 'all',     // 'all' か SNSキー
+  reordering: false, // 並べ替えモード中か
 };
 
 let addDraft = null; // 追加フローの一時データ
@@ -498,12 +499,17 @@ async function setDoneManual(p, val) {
 /* -----------------------------------------------------------
    6. 画面を描く
    ----------------------------------------------------------- */
-function renderAll() { renderChips(); renderProgress(); renderList(); }
+function renderAll() { renderChips(); renderReorderBtn(); renderProgress(); renderList(); }
 
 // 今日の進捗（フィルター連動：すべて＝全員の済み人数／単一SNS＝そのSNSの済み人数）
 function renderProgress() {
   const box = $('#progress');
   if (!box) return;
+  if (state.reordering) { // 並べ替え中は進捗の代わりに案内を出す
+    box.innerHTML = '';
+    box.appendChild(el('div', 'progress-text', '並べ替え中：ドラッグで移動 ／ 右上の ✓ で完了'));
+    return;
+  }
   const filter = state.filter;
   let people = state.people.slice();
   let label = '';
@@ -550,6 +556,11 @@ function renderList() {
   if (state.filter !== 'all') people = people.filter((p) => p.accounts && p.accounts[state.filter]);
 
   if (people.length === 0) { box.appendChild(emptyState()); return; }
+
+  if (state.reordering) { // 並べ替え中は沈みオフの平ら表示（仕切りなし）
+    for (const p of people) box.appendChild(personCard(p, false));
+    return;
+  }
   const notYet = people.filter((p) => !isDone(p, state.filter));
   const done = people.filter((p) => isDone(p, state.filter));
   for (const p of notYet) box.appendChild(personCard(p, false));
@@ -565,51 +576,48 @@ function doneDivider() {
 }
 
 /* -----------------------------------------------------------
-   6.5 並べ替え（ドラッグ）— グリップを掴んで上下、order を更新
+   6.5 並べ替え（SortableJS によるモード式）
+   ・上部 ↕ ボタンでモード出入り（「すべて」表示の時だけ）
+   ・モード中は沈みオフの平ら表示／カードのタップは無効・ドラッグ優先
+   ・1枚動かすたび即保存／自動スクロールあり
    ----------------------------------------------------------- */
-function dragAfter(list, y, dragEl) {
-  const cards = [...list.querySelectorAll('.card')].filter((c) => c !== dragEl);
-  for (const c of cards) {
-    const r = c.getBoundingClientRect();
-    if (y < r.top + r.height / 2) return c;
-  }
-  return null; // いちばん下
-}
-function startCardDrag(e, card) {
-  if (e.button != null && e.button > 0) return; // 左ボタン/タッチのみ
-  e.preventDefault();
-  e.stopPropagation();
-  const list = $('#list');
-  const grip = e.currentTarget;
-  try { grip.setPointerCapture(e.pointerId); } catch (_) {}
-  card.classList.add('is-dragging');
-  document.body.classList.add('reordering');
+let _sortable = null;
+function toggleReorder() { state.reordering ? exitReorder() : enterReorder(); }
 
-  const onMove = (ev) => {
-    ev.preventDefault();
-    const after = dragAfter(list, ev.clientY, card);
-    if (after == null) {
-      const divider = list.querySelector('.done-divider');
-      if (divider) { if (card.nextSibling !== divider) list.insertBefore(card, divider); }
-      else if (list.lastElementChild !== card) list.appendChild(card);
-    } else if (after !== card && after !== card.nextSibling) {
-      list.insertBefore(card, after);
-    }
-  };
-  const onUp = async () => {
-    document.removeEventListener('pointermove', onMove);
-    document.removeEventListener('pointerup', onUp);
-    document.removeEventListener('pointercancel', onUp);
-    card.classList.remove('is-dragging');
-    document.body.classList.remove('reordering');
-    await persistOrderFromDom();
-    renderAll();
-  };
-  document.addEventListener('pointermove', onMove, { passive: false });
-  document.addEventListener('pointerup', onUp);
-  document.addEventListener('pointercancel', onUp);
+function enterReorder() {
+  if (state.filter !== 'all') return;                 // すべて表示の時だけ
+  if (typeof Sortable === 'undefined') { toast('並べ替えを読み込めませんでした'); return; }
+  state.reordering = true;
+  document.body.classList.add('reordering-mode');
+  renderAll();                                        // 沈みオフの平ら表示にする
+  _sortable = Sortable.create($('#list'), {
+    animation: 150,
+    draggable: '.card',
+    forceFallback: true,        // PC/スマホで同じ確実なドラッグ実装を使う
+    fallbackTolerance: 4,
+    delay: 150,                 // 押し込みで掴む（タップ/スクロールと区別）
+    delayOnTouchOnly: true,     // タッチの時だけ遅延（マウスは即）
+    scroll: true,               // 端に寄ると自動スクロール
+    scrollSensitivity: 70,
+    scrollSpeed: 14,
+    forceAutoScrollFallback: true,
+    ghostClass: 'card-ghost',
+    chosenClass: 'card-chosen',
+    fallbackClass: 'card-fallback',
+    onEnd: () => { persistOrderFromDom(); },          // 1枚動かすたび即保存
+  });
+  toast('並べ替え中：ドラッグで移動／右上の ✓ で完了');
 }
-// 画面のカード並びを order に焼き込む（フィルター中は表示中の人だけ並べ替え）
+
+function exitReorder() {
+  if (_sortable) { try { _sortable.destroy(); } catch (_) {} _sortable = null; }
+  state.reordering = false;
+  document.body.classList.remove('reordering-mode');
+  persistOrderFromDom();   // 念のため最終確定
+  renderAll();             // 沈みを再計算して通常表示へ
+}
+
+// 画面のカード並びを order に焼き込む（並び順は全体で1つ）
 async function persistOrderFromDom() {
   const ids = [...$('#list').querySelectorAll('.card')].map((c) => c.dataset.id).filter(Boolean);
   if (!ids.length) return;
@@ -623,6 +631,16 @@ async function persistOrderFromDom() {
     const p = getPerson(newGlobal[i]);
     if (p && p.order !== i + 1) { p.order = i + 1; await idbPut(p); }
   }
+}
+
+// ↕ ボタンの表示（すべての時だけ）と状態（モード中は ✓）
+function renderReorderBtn() {
+  const btn = $('#reorder');
+  if (!btn) return;
+  btn.style.display = state.filter === 'all' ? '' : 'none';
+  btn.classList.toggle('is-on', !!state.reordering);
+  btn.textContent = state.reordering ? '✓' : '↕';
+  btn.setAttribute('aria-label', state.reordering ? '並べ替えを完了' : '並べ替え');
 }
 
 function emptyState() {
@@ -663,14 +681,7 @@ function personCard(p, done) {
   menu.textContent = '⋯';
   menu.addEventListener('click', () => openDetailSheet(p.id));
 
-  const grip = document.createElement('button');
-  grip.type = 'button';
-  grip.className = 'card-grip';
-  grip.setAttribute('aria-label', 'つかんで並べ替え');
-  grip.textContent = '⠿';
-  grip.addEventListener('pointerdown', (e) => startCardDrag(e, card));
-
-  top.append(av, name, menu, grip);
+  top.append(av, name, menu);
   card.appendChild(top);
 
   const snsRow = document.createElement('div');
@@ -1537,6 +1548,9 @@ function bindGlobal() {
   // 背景の上スワイプ等がPWA本体に伝わらないように（誤って閉じるのを防ぐ）
   $('#backdrop').addEventListener('touchmove', (e) => { e.preventDefault(); }, { passive: false });
   enableSheetDrag($('#sheet')); // シートを下スワイプで閉じられるように
+
+  const reorderBtn = $('#reorder');
+  if (reorderBtn) reorderBtn.addEventListener('click', toggleReorder);
 
   const refreshBtn = $('#refresh');
   if (refreshBtn) {

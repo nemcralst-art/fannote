@@ -23,9 +23,12 @@
   <!-- ===== ヘッダー ===== -->
   <header class="app-header">
     <h1 class="app-title">ファンノート</h1>
-    <button class="header-refresh" id="refresh" type="button" aria-label="新着を更新">
-      <span class="header-refresh-ico" aria-hidden="true">⟳</span>
-    </button>
+    <div class="header-actions">
+      <button class="header-reorder" id="reorder" type="button" aria-label="並べ替え">↕</button>
+      <button class="header-refresh" id="refresh" type="button" aria-label="新着を更新">
+        <span class="header-refresh-ico" aria-hidden="true">⟳</span>
+      </button>
+    </div>
   </header>
 
   <!-- ===== フィルターチップ ===== -->
@@ -61,6 +64,7 @@
   <!-- ===== トースト（お知らせ） ===== -->
   <div class="toast" id="toast" hidden></div>
 
+  <script src="./js/sortable.min.js"></script>
   <script src="./js/app.js"></script>
 </body>
 </html>

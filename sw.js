@@ -2,12 +2,13 @@
    役割：ファイルをキャッシュしてオフラインでも開けるようにする。
    ※ IndexedDB（登録した人のデータ）には一切さわりません。更新で消えません。 */
 
-const VERSION = 'fannote-v1.6.0';
+const VERSION = 'fannote-v1.7.0';
 
 const ASSETS = [
   './',
   './index.html',
   './css/styles.css',
+  './js/sortable.min.js',
   './js/app.js',
   './manifest.webmanifest',
   './icons/favicon.png',
