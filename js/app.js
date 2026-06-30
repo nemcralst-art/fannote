@@ -839,7 +839,7 @@ function openAddSheet() {
 
 // 8-1 どのSNS？
 function buildAddStepSNS(sheet) {
-  sheet.appendChild(titleEl('おきに追加'));
+  sheet.appendChild(titleEl('追加'));
   sheet.appendChild(subEl('どこのアカウントを追加する？'));
   for (const s of SNS_REGISTRY) {
     const b = el('button', 'row-btn'); b.type = 'button';
@@ -1308,7 +1308,7 @@ function buildDetail(sheet, id) {
   del.style.marginTop = '18px';
   const di = el('span', 'row-ico', '🗑'); di.style.background = 'var(--danger)';
   del.appendChild(di);
-  del.appendChild((() => { const m = el('div', 'row-main'); m.appendChild(el('span', null, 'この人をおきにから削除')); return m; })());
+  del.appendChild((() => { const m = el('div', 'row-main'); m.appendChild(el('span', null, 'この人をリストから削除')); return m; })());
   del.addEventListener('click', () => {
     confirmDialog({
       title: 'この人を削除しますか？',
