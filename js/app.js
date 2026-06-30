@@ -652,8 +652,8 @@ function emptyState() {
     `<div class="empty-emoji">${isFilter ? '🔎' : '💜'}</div>` +
     `<div class="empty-text">${
       isFilter
-        ? `まだ ${sns ? sns.label : ''} の人がいません。<br>下の「＋ おきに追加」から登録できます。`
-        : 'まだ誰もいません。<br>下の「＋ おきに追加」から、<br>好きな人を登録してみてね。'
+        ? `まだ ${sns ? sns.label : ''} の人がいません。<br>下の「＋ 追加」から登録できます。`
+        : 'まだ誰もいません。<br>下の「＋ 追加」から、<br>好きな人を登録してみてね。'
     }</div>`;
   return box;
 }
