@@ -1312,7 +1312,7 @@ function buildDetail(sheet, id) {
   del.addEventListener('click', () => {
     confirmDialog({
       title: 'この人を削除しますか？',
-      body: `「${p.name}」をおきにから消します。\nこの操作は取り消せません。`,
+      body: `「${p.name}」をリストから消します。\nこの操作は取り消せません。`,
       danger: true, okLabel: '削除する',
       onOk: () => deletePerson(id),
     });
@@ -1464,7 +1464,7 @@ function removeSNS(id, key) {
   if (count <= 1) {
     confirmDialog({
       title: 'この人を削除しますか？',
-      body: `${sns.label} は 「${p.name}」の最後のSNSです。\n外すと「${p.name}」はおきにから消えます。`,
+      body: `${sns.label} は 「${p.name}」の最後のSNSです。\n外すと「${p.name}」はリストから消えます。`,
       danger: true, okLabel: '削除する',
       onOk: () => deletePerson(id),
     });
